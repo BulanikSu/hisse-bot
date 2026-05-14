@@ -1,54 +1,43 @@
 """
 📈 Telegram Hisse Takip Botu
 ─────────────────────────────
-Kurulum:
-  pip install python-telegram-bot yfinance
-
-Çalıştırma:
-  python hisse_bot.py
-
-Komutlar:
-  /ekle THYAO 250.50 100 2024-01-15   → hisse ekle (sembol, alış fiyatı, adet, tarih)
-  /portfoy                             → portföyü göster
-  /sil THYAO                           → hisseyi sil
-  /gecmis                              → tüm işlem geçmişi
-  /yardim                              → komut listesi
+Hisse ekle:    THYAO 125
+               THYAO 125 100        (adet belirtmek istersen)
+Durum gör:     son durum
+Sil:           /sil THYAO
+Geçmiş:        /gecmis
 """
 
 import sqlite3
 import logging
-from datetime import datetime
+from datetime import datetime, date
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import yfinance as yf
 
-# ── Ayarlar ────────────────────────────────────────────────────────────────
-BOT_TOKEN = "7376422219:AAGTK3QKYGFUs0kIR3ZuH5TFdcwRasbsCRo"   # @BotFather'dan alınan token
+BOT_TOKEN = "7376422219:AAGTK3QKYGFUs0kIR3ZuH5TFdcwRasbsCRo"
 DB_FILE   = "portfoy.db"
-# ───────────────────────────────────────────────────────────────────────────
 
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
-)
+logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
 # ── Veritabanı ─────────────────────────────────────────────────────────────
 
-def db_baglanti():
+def db():
     return sqlite3.connect(DB_FILE)
 
 def db_olustur():
-    with db_baglanti() as con:
+    with db() as con:
         con.execute("""
             CREATE TABLE IF NOT EXISTS hisseler (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 kullanici   INTEGER NOT NULL,
-                sembol      TEXT    NOT NULL,
+                sembol      TEXT    NOT NULL,     -- dahili: THYAO.IS
+                sembol_goster TEXT  NOT NULL,     -- kullanıcıya gösterilen: THYAO
                 alis_fiyati REAL    NOT NULL,
-                adet        REAL    NOT NULL,
-                tarih       TEXT    NOT NULL,
+                adet        REAL    NOT NULL DEFAULT 1,
+                tarih       TEXT    NOT NULL,     -- YYYY-MM-DD
                 eklendi     TEXT    DEFAULT (datetime('now','localtime'))
             )
         """)
@@ -57,159 +46,184 @@ def db_olustur():
 
 # ── Fiyat çekme ────────────────────────────────────────────────────────────
 
-def guncel_fiyat(sembol: str) -> float | None:
-    """yfinance ile anlık/son kapanış fiyatını döndürür."""
-    try:
-        ticker = yf.Ticker(sembol)
-        info   = ticker.fast_info
-        fiyat  = getattr(info, "last_price", None) or getattr(info, "previous_close", None)
-        return float(fiyat) if fiyat else None
-    except Exception as e:
-        logger.warning(f"Fiyat alınamadı ({sembol}): {e}")
-        return None
+def fiyat_al(sembol: str):
+    """(fiyat, tam_sembol) döndürür. Önce direkt, sonra .IS ekleyerek dener."""
+    denemeler = [sembol, sembol + ".IS"] if not sembol.endswith(".IS") else [sembol]
+    for s in denemeler:
+        try:
+            info  = yf.Ticker(s).fast_info
+            fiyat = getattr(info, "last_price", None) or getattr(info, "previous_close", None)
+            if fiyat:
+                return float(fiyat), s
+        except Exception as e:
+            logger.warning(f"{s}: {e}")
+    return None, None
 
 
 # ── Yardımcılar ────────────────────────────────────────────────────────────
 
 def kar_emoji(yuzde: float) -> str:
-    if yuzde >= 10:  return "🚀"
-    if yuzde >= 5:   return "📈"
-    if yuzde >= 0:   return "✅"
-    if yuzde >= -5:  return "📉"
+    if yuzde >= 15: return "🚀"
+    if yuzde >= 5:  return "📈"
+    if yuzde >= 0:  return "✅"
+    if yuzde >= -5: return "📉"
     return "🔴"
 
-def tarih_dogrula(tarih_str: str) -> bool:
-    try:
-        datetime.strptime(tarih_str, "%Y-%m-%d")
-        return True
-    except ValueError:
-        return False
+def gun_farki(tarih_str: str) -> int:
+    t = datetime.strptime(tarih_str, "%Y-%m-%d").date()
+    return (date.today() - t).days
+
+def bugun() -> str:
+    return date.today().strftime("%Y-%m-%d")
 
 
 # ── /yardim ────────────────────────────────────────────────────────────────
 
 async def yardim(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    mesaj = (
-        "📋 *Hisse Takip Botu - Komutlar*\n\n"
-        "`/ekle SEMBOL ALIŞ_FİYATI ADET TARİH`\n"
-        "  → Portföye hisse ekler\n"
-        "  → Tarih: YYYY-MM-DD formatında\n"
-        "  → Örn: `/ekle THYAO.IS 250.50 100 2024-01-15`\n\n"
-        "`/portfoy`\n"
-        "  → Tüm hisseleri güncel fiyat ve kâr/zarar ile gösterir\n\n"
-        "`/sil SEMBOL`\n"
-        "  → O semboldeki tüm pozisyonları siler\n\n"
-        "`/gecmis`\n"
-        "  → Tüm kayıtlı işlemleri listeler\n\n"
-        "💡 *İpucu:* Borsa İstanbul hisseleri için `.IS` ekleyin\n"
-        "  Örn: `THYAO.IS`, `GARAN.IS`, `ASELS.IS`\n"
-        "  ABD hisseleri direkt: `AAPL`, `TSLA`, `NVDA`"
+    await update.message.reply_text(
+        "📋 *Hisse Takip Botu*\n\n"
+        "Hisse eklemek için yaz:\n"
+        "`THYAO 125`\n"
+        "`THYAO 125 100`  _(adetli)_\n\n"
+        "Tarih otomatik kaydedilir ✅\n\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "`son durum` → kapsamlı kâr/zarar raporu\n"
+        "`/sil THYAO` → hisseyi sil\n"
+        "`/gecmis` → tüm alımlar\n"
+        "`/yardim` → bu mesaj",
+        parse_mode="Markdown"
     )
-    await update.message.reply_text(mesaj, parse_mode="Markdown")
 
 
-# ── /ekle ──────────────────────────────────────────────────────────────────
+# ── Hisse ekleme (düz mesaj) ───────────────────────────────────────────────
 
-async def ekle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
+async def mesaj_isle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid   = update.effective_user.id
+    metin = update.message.text.strip()
 
-    if len(ctx.args) < 4:
+    # "son durum" kontrolü
+    if metin.lower() in ["son durum", "son durum?", "durum", "portfoy", "portföy"]:
+        await son_durum_goster(update, uid)
+        return
+
+    parcalar = metin.split()
+
+    # Format: SEMBOL FİYAT [ADET]
+    if len(parcalar) < 2 or len(parcalar) > 3:
         await update.message.reply_text(
-            "❌ Eksik parametre!\n"
-            "Kullanım: `/ekle SEMBOL ALIŞ_FİYATI ADET TARİH`\n"
-            "Örn: `/ekle THYAO.IS 250.50 100 2024-01-15`",
+            "❓ Anlamadım.\n\n"
+            "Hisse eklemek için:\n`THYAO 125`\n`THYAO 125 100`\n\n"
+            "Durum için: `son durum`",
             parse_mode="Markdown"
         )
         return
 
-    sembol = ctx.args[0].upper()
-    tarih  = ctx.args[3]
+    sembol_goster = parcalar[0].upper()
 
     try:
-        alis  = float(ctx.args[1].replace(",", "."))
-        adet  = float(ctx.args[2].replace(",", "."))
+        alis = float(parcalar[1].replace(",", "."))
+        adet = float(parcalar[2].replace(",", ".")) if len(parcalar) == 3 else 1.0
     except ValueError:
-        await update.message.reply_text("❌ Fiyat ve adet sayı olmalı.")
+        await update.message.reply_text("❌ Fiyat sayı olmalı. Örn: `THYAO 125`", parse_mode="Markdown")
         return
 
-    if not tarih_dogrula(tarih):
-        await update.message.reply_text("❌ Tarih formatı yanlış. Doğru format: `YYYY-MM-DD`", parse_mode="Markdown")
+    if alis <= 0 or adet <= 0:
+        await update.message.reply_text("❌ Fiyat ve adet 0'dan büyük olmalı.")
         return
 
-    # Sembolün varlığını doğrula
-    await update.message.reply_text(f"🔍 `{sembol}` doğrulanıyor...", parse_mode="Markdown")
-    fiyat = guncel_fiyat(sembol)
+    await update.message.reply_text(f"🔍 `{sembol_goster}` aranıyor...", parse_mode="Markdown")
+
+    fiyat, sembol_tam = fiyat_al(sembol_goster)
+
     if fiyat is None:
         await update.message.reply_text(
-            f"⚠️ `{sembol}` için fiyat alınamadı. Sembolü kontrol et.\n"
-            f"BIST hisseleri için sonuna `.IS` ekle (örn: `THYAO.IS`)",
+            f"⚠️ `{sembol_goster}` bulunamadı.\n"
+            f"Sembolü kontrol et. (Örn: THYAO, GARAN, AAPL, BTC-USD)",
             parse_mode="Markdown"
         )
         return
 
-    toplam_maliyet = alis * adet
+    tarih = bugun()
 
-    with db_baglanti() as con:
+    with db() as con:
         con.execute(
-            "INSERT INTO hisseler (kullanici, sembol, alis_fiyati, adet, tarih) VALUES (?,?,?,?,?)",
-            (uid, sembol, alis, adet, tarih)
+            "INSERT INTO hisseler (kullanici, sembol, sembol_goster, alis_fiyati, adet, tarih) VALUES (?,?,?,?,?,?)",
+            (uid, sembol_tam, sembol_goster, alis, adet, tarih)
         )
         con.commit()
 
     kar_zarar = (fiyat - alis) * adet
     yuzde     = ((fiyat - alis) / alis) * 100
     emoji     = kar_emoji(yuzde)
+    bist      = " _(BIST)_" if sembol_tam.endswith(".IS") else ""
 
     await update.message.reply_text(
-        f"✅ *{sembol}* portföye eklendi!\n\n"
-        f"📅 Alış tarihi: `{tarih}`\n"
-        f"💰 Alış fiyatı: `{alis:,.2f}`\n"
+        f"✅ *{sembol_goster}*{bist} kaydedildi!\n\n"
+        f"📅 Tarih: `{tarih}`\n"
+        f"💰 Alış: `{alis:,.2f}`\n"
         f"📦 Adet: `{adet:,.0f}`\n"
-        f"💵 Toplam maliyet: `{toplam_maliyet:,.2f}`\n\n"
-        f"📊 *Güncel durum:*\n"
-        f"  Şu an: `{fiyat:,.2f}`\n"
-        f"  Kâr/Zarar: `{kar_zarar:+,.2f}` ({yuzde:+.2f}%) {emoji}",
+        f"💵 Toplam: `{alis * adet:,.2f}`\n\n"
+        f"📊 Şu anki fiyat: `{fiyat:,.2f}`\n"
+        f"K/Z: `{kar_zarar:+,.2f}` ({yuzde:+.2f}%) {emoji}\n\n"
+        f"_Rapor için: son durum_",
         parse_mode="Markdown"
     )
 
 
-# ── /portfoy ───────────────────────────────────────────────────────────────
+# ── Son Durum Raporu ───────────────────────────────────────────────────────
 
-async def portfoy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-
-    with db_baglanti() as con:
-        satirlar = con.execute(
-            "SELECT sembol, alis_fiyati, adet, tarih FROM hisseler WHERE kullanici=? ORDER BY sembol, tarih",
+async def son_durum_goster(update: Update, uid: int):
+    with db() as con:
+        kayitlar = con.execute(
+            """SELECT sembol, sembol_goster, alis_fiyati, adet, tarih
+               FROM hisseler WHERE kullanici=?
+               ORDER BY sembol_goster, tarih""",
             (uid,)
         ).fetchall()
 
-    if not satirlar:
+    if not kayitlar:
         await update.message.reply_text(
-            "📭 Portföyünde henüz hisse yok.\n"
-            "Eklemek için: `/ekle THYAO.IS 250.50 100 2024-01-15`",
+            "📭 Henüz hisse yok.\n\nEklemek için: `THYAO 125`",
             parse_mode="Markdown"
         )
         return
 
-    await update.message.reply_text("⏳ Güncel fiyatlar alınıyor...", parse_mode="Markdown")
+    await update.message.reply_text("⏳ Fiyatlar alınıyor...", parse_mode="Markdown")
 
-    # Sembolleri grupla
-    sembol_gruplari: dict[str, list] = {}
-    for sembol, alis, adet, tarih in satirlar:
-        sembol_gruplari.setdefault(sembol, []).append((alis, adet, tarih))
+    # Sembolleri grupla, tek seferde fiyat çek
+    semboller = list({r[0] for r in kayitlar})
+    fiyatlar  = {}
+    for s in semboller:
+        try:
+            info  = yf.Ticker(s).fast_info
+            f     = getattr(info, "last_price", None) or getattr(info, "previous_close", None)
+            fiyatlar[s] = float(f) if f else None
+        except:
+            fiyatlar[s] = None
 
-    toplam_maliyet   = 0.0
-    toplam_deger     = 0.0
-    satirlar_metin   = []
+    # Grupla: sembol → pozisyonlar
+    gruplar: dict[str, list] = {}
+    for sembol, goster, alis, adet, tarih in kayitlar:
+        gruplar.setdefault(sembol, {"goster": goster, "pozisyonlar": []})
+        gruplar[sembol]["pozisyonlar"].append((alis, adet, tarih))
 
-    for sembol, pozisyonlar in sembol_gruplari.items():
-        fiyat = guncel_fiyat(sembol)
+    toplam_maliyet = 0.0
+    toplam_deger   = 0.0
+    en_iyi         = ("", -999)
+    en_kotu        = ("", 999)
+    satirlar       = []
+
+    for sembol, bilgi in gruplar.items():
+        goster     = bilgi["goster"]
+        pozisyonlar = bilgi["pozisyonlar"]
+        fiyat      = fiyatlar.get(sembol)
+
         if fiyat is None:
-            satirlar_metin.append(f"⚠️ *{sembol}* — fiyat alınamadı")
+            satirlar.append(f"⚠️ *{goster}* — fiyat alınamadı")
             continue
 
         for alis, adet, tarih in pozisyonlar:
+            gun       = gun_farki(tarih)
             maliyet   = alis * adet
             deger     = fiyat * adet
             kar       = deger - maliyet
@@ -219,26 +233,44 @@ async def portfoy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             toplam_maliyet += maliyet
             toplam_deger   += deger
 
-            satirlar_metin.append(
-                f"{emoji} *{sembol}*\n"
-                f"  📅 {tarih} | {adet:,.0f} adet\n"
-                f"  Alış: `{alis:,.2f}` → Şimdi: `{fiyat:,.2f}`\n"
-                f"  K/Z: `{kar:+,.2f}` ({yuzde:+.2f}%)"
+            if yuzde > en_iyi[1]:
+                en_iyi = (goster, yuzde)
+            if yuzde < en_kotu[1]:
+                en_kotu = (goster, yuzde)
+
+            gun_metin = f"{gun} gün önce" if gun > 0 else "bugün"
+
+            satirlar.append(
+                f"{emoji} *{goster}*\n"
+                f"  🗓 Alış: `{alis:,.2f}` → Şimdi: `{fiyat:,.2f}` ({gun_metin})\n"
+                f"  📦 {adet:,.0f} adet | Maliyet: `{maliyet:,.2f}`\n"
+                f"  💰 Güncel değer: `{deger:,.2f}`\n"
+                f"  {'📈' if kar >= 0 else '📉'} K/Z: `{kar:+,.2f}` ({yuzde:+.2f}%)"
             )
 
-    toplam_kar    = toplam_deger - toplam_maliyet
-    toplam_yuzde  = ((toplam_deger - toplam_maliyet) / toplam_maliyet * 100) if toplam_maliyet else 0
-    ozet_emoji    = kar_emoji(toplam_yuzde)
+    toplam_kar   = toplam_deger - toplam_maliyet
+    toplam_yuzde = (toplam_kar / toplam_maliyet * 100) if toplam_maliyet else 0
+    ozet_emoji   = kar_emoji(toplam_yuzde)
+
+    # Özet bölümü
+    ozet = (
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"💼 *PORTFÖY ÖZETİ*\n\n"
+        f"  Toplam yatırım: `{toplam_maliyet:,.2f}`\n"
+        f"  Güncel değer:   `{toplam_deger:,.2f}`\n"
+        f"  Net K/Z:        `{toplam_kar:+,.2f}` ({toplam_yuzde:+.2f}%) {ozet_emoji}\n"
+    )
+
+    if en_iyi[0]:
+        ozet += f"\n  🏆 En iyi: *{en_iyi[0]}* ({en_iyi[1]:+.2f}%)"
+    if en_kotu[0] and en_kotu[0] != en_iyi[0]:
+        ozet += f"\n  💔 En kötü: *{en_kotu[0]}* ({en_kotu[1]:+.2f}%)"
 
     mesaj = (
-        "📊 *Portföyüm*\n"
+        f"📊 *SON DURUM*  —  {date.today().strftime('%d.%m.%Y')}\n"
         "━━━━━━━━━━━━━━━━━━\n\n"
-        + "\n\n".join(satirlar_metin)
-        + "\n\n━━━━━━━━━━━━━━━━━━\n"
-        f"💼 *Toplam Özet*\n"
-        f"  Maliyet: `{toplam_maliyet:,.2f}`\n"
-        f"  Güncel:  `{toplam_deger:,.2f}`\n"
-        f"  Kâr/Zarar: `{toplam_kar:+,.2f}` ({toplam_yuzde:+.2f}%) {ozet_emoji}"
+        + "\n\n".join(satirlar)
+        + "\n\n" + ozet
     )
 
     await update.message.reply_text(mesaj, parse_mode="Markdown")
@@ -250,21 +282,22 @@ async def sil(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
 
     if not ctx.args:
-        await update.message.reply_text("❌ Kullanım: `/sil SEMBOL`\nÖrn: `/sil THYAO.IS`", parse_mode="Markdown")
+        await update.message.reply_text("❌ Kullanım: `/sil THYAO`", parse_mode="Markdown")
         return
 
-    sembol = ctx.args[0].upper()
+    s = ctx.args[0].upper().replace(".IS", "")
 
-    with db_baglanti() as con:
-        etkilenen = con.execute(
-            "DELETE FROM hisseler WHERE kullanici=? AND sembol=?", (uid, sembol)
+    with db() as con:
+        n = con.execute(
+            "DELETE FROM hisseler WHERE kullanici=? AND (sembol_goster=? OR sembol=? OR sembol=?)",
+            (uid, s, s, s + ".IS")
         ).rowcount
         con.commit()
 
-    if etkilenen:
-        await update.message.reply_text(f"🗑️ *{sembol}* portföyden silindi. ({etkilenen} kayıt)", parse_mode="Markdown")
+    if n:
+        await update.message.reply_text(f"🗑️ *{s}* silindi. ({n} kayıt)", parse_mode="Markdown")
     else:
-        await update.message.reply_text(f"⚠️ Portföyde `{sembol}` bulunamadı.", parse_mode="Markdown")
+        await update.message.reply_text(f"⚠️ `{s}` portföyde bulunamadı.", parse_mode="Markdown")
 
 
 # ── /gecmis ────────────────────────────────────────────────────────────────
@@ -272,23 +305,22 @@ async def sil(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def gecmis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
 
-    with db_baglanti() as con:
+    with db() as con:
         kayitlar = con.execute(
-            "SELECT sembol, alis_fiyati, adet, tarih, eklendi FROM hisseler WHERE kullanici=? ORDER BY eklendi DESC",
+            "SELECT sembol_goster, alis_fiyati, adet, tarih FROM hisseler WHERE kullanici=? ORDER BY eklendi DESC",
             (uid,)
         ).fetchall()
 
     if not kayitlar:
-        await update.message.reply_text("📭 Hiç işlem kaydı yok.")
+        await update.message.reply_text("📭 Hiç kayıt yok.")
         return
 
-    satirlar = ["📜 *İşlem Geçmişi*\n━━━━━━━━━━━━━━━━━━\n"]
-    for sembol, alis, adet, tarih, eklendi in kayitlar:
-        toplam = alis * adet
+    satirlar = [f"📜 *Tüm Alımlar*  ({len(kayitlar)} kayıt)\n━━━━━━━━━━━━━━━━━━"]
+    for goster, alis, adet, tarih in kayitlar:
+        gun = gun_farki(tarih)
         satirlar.append(
-            f"• *{sembol}* | {adet:,.0f} adet @ `{alis:,.2f}`\n"
-            f"  📅 Alış: {tarih} | Kaydedildi: {eklendi[:10]}\n"
-            f"  💵 Maliyet: `{toplam:,.2f}`"
+            f"• *{goster}* — `{alis:,.2f}` × {adet:,.0f} adet\n"
+            f"  📅 {tarih}  _{gun} gün önce_"
         )
 
     await update.message.reply_text("\n\n".join(satirlar), parse_mode="Markdown")
@@ -297,20 +329,14 @@ async def gecmis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ── Ana program ────────────────────────────────────────────────────────────
 
 def main():
-    if BOT_TOKEN == "BURAYA_BOT_TOKEN_YAZI":
-        print("❌ Lütfen BOT_TOKEN değişkenini kendi token'ınızla değiştirin!")
-        print("   @BotFather → /newbot → token'ı kopyalayın")
-        return
-
     db_olustur()
 
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start",   yardim))
     app.add_handler(CommandHandler("yardim",  yardim))
-    app.add_handler(CommandHandler("ekle",    ekle))
-    app.add_handler(CommandHandler("portfoy", portfoy))
     app.add_handler(CommandHandler("sil",     sil))
     app.add_handler(CommandHandler("gecmis",  gecmis))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mesaj_isle))
 
     print("🤖 Bot başlatılıyor...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
