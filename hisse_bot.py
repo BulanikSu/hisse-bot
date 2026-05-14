@@ -23,7 +23,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 import yfinance as yf
 
 # ── Ayarlar ────────────────────────────────────────────────────────────────
-BOT_TOKEN = "BURAYA_BOT_TOKEN_YAZI"   # @BotFather'dan alınan token
+BOT_TOKEN = "7376422219:AAGTK3QKYGFUs0kIR3ZuH5TFdcwRasbsCRo"   # @BotFather'dan alınan token
 DB_FILE   = "portfoy.db"
 # ───────────────────────────────────────────────────────────────────────────
 
