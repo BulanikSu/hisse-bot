@@ -1,13 +1,15 @@
 """
-📈 Profesyonel Hisse Takip Botu — Grup Uyumlu
-───────────────────────────────────────────────
-Sadece "Takipçi" ile başlayan mesajlara cevap verir.
+📈 Hisse Takip Botu — Grup Paylaşımlı
+───────────────────────────────────────
+• Grup içinde herkes aynı portföyü görür
+• Her hissede kimin eklediği yazar
+• Sadece "Takipçi" ile başlayan mesajlara cevap verir
 
 Kullanım:
-  Takipçi Karel 12.70                        → tek hisse
-  Takipçi Karel 12.70 Glrmk 192 Hatsn 45.4  → çoklu hisse
-  Takipçi menu                               → ana menü
-  Takipçi son durum                          → rapor
+  Takipçi Karel 12.70
+  Takipçi Karel 12.70 Glrmk 192 Hatsn 45.4
+  Takipçi son durum
+  Takipçi menu
 """
 
 import sqlite3
@@ -22,15 +24,15 @@ import yfinance as yf
 
 BOT_TOKEN = "7376422219:AAGTK3QKYGFUs0kIR3ZuH5TFdcwRasbsCRo"
 DB_FILE   = "portfoy.db"
-PREFIX    = "takipçi"   # küçük harfle karşılaştırılacak
+PREFIX    = "takipçi"
 
 logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-# ════════════════════════════════════════════
+# ════════════════════════════════════════════════════════
 #  VERİTABANI
-# ════════════════════════════════════════════
+# ════════════════════════════════════════════════════════
 
 def db():
     return sqlite3.connect(DB_FILE)
@@ -40,9 +42,11 @@ def db_olustur():
         con.execute("""
             CREATE TABLE IF NOT EXISTS pozisyonlar (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                kullanici       INTEGER NOT NULL,
-                sembol          TEXT    NOT NULL,
-                sembol_goster   TEXT    NOT NULL,
+                chat_id         INTEGER NOT NULL,       -- grup/özel sohbet ID
+                kullanici_id    INTEGER NOT NULL,       -- kim ekledi (ID)
+                kullanici_adi   TEXT    NOT NULL,       -- kim ekledi (isim)
+                sembol          TEXT    NOT NULL,       -- dahili: THYAO.IS
+                sembol_goster   TEXT    NOT NULL,       -- kullanıcıya: THYAO
                 alis_fiyati     REAL    NOT NULL,
                 adet            REAL    NOT NULL DEFAULT 1,
                 alis_tarihi     TEXT    NOT NULL,
@@ -55,9 +59,9 @@ def db_olustur():
         con.commit()
 
 
-# ════════════════════════════════════════════
+# ════════════════════════════════════════════════════════
 #  YARDIMCILAR
-# ════════════════════════════════════════════
+# ════════════════════════════════════════════════════════
 
 def fiyat_al(sembol: str):
     denemeler = [sembol, sembol + ".IS"] if not sembol.endswith(".IS") else [sembol]
@@ -87,15 +91,43 @@ def bugun() -> str:
 def fmt_tarih(t: str) -> str:
     return datetime.strptime(t, "%Y-%m-%d").strftime("%d.%m.%Y")
 
+def kullanici_adi_al(user) -> str:
+    if user.first_name and user.last_name:
+        return f"{user.first_name} {user.last_name}"
+    return user.first_name or user.username or "Bilinmiyor"
+
+def chat_id_al(update: Update) -> int:
+    return update.effective_chat.id
+
 def prefix_cikar(metin: str) -> str:
-    """'Takipçi ...' → '...' döndürür."""
     parcalar = metin.strip().split(None, 1)
     return parcalar[1].strip() if len(parcalar) > 1 else ""
 
+def parse_hisseler(metin: str):
+    """
+    "Karel 12.70 Glrmk 192 Hatsn 45.4" → [("KAREL", 12.70), ("GLRMK", 192.0), ...]
+    """
+    parcalar = metin.split()
+    if not parcalar or len(parcalar) % 2 != 0:
+        return None
+    sonuc = []
+    for i in range(0, len(parcalar), 2):
+        sembol = parcalar[i].upper()
+        if not all(c.isalpha() or c.isdigit() or c in "-." for c in sembol):
+            return None
+        try:
+            fiyat = float(parcalar[i + 1].replace(",", "."))
+            if fiyat <= 0:
+                return None
+        except ValueError:
+            return None
+        sonuc.append((sembol, fiyat))
+    return sonuc or None
 
-# ════════════════════════════════════════════
+
+# ════════════════════════════════════════════════════════
 #  ANA MENÜ
-# ════════════════════════════════════════════
+# ════════════════════════════════════════════════════════
 
 def ana_menu_klavye():
     return InlineKeyboardMarkup([
@@ -107,7 +139,7 @@ def ana_menu_klavye():
             InlineKeyboardButton("📁 Kapalı Pozlar",  callback_data="kapali_pozlar"),
             InlineKeyboardButton("📜 Geçmiş",         callback_data="gecmis"),
         ],
-        [InlineKeyboardButton("❓ Yardım", callback_data="yardim")],
+        [InlineKeyboardButton("❓ Yardım",            callback_data="yardim")],
     ])
 
 async def menu_goster(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -119,45 +151,20 @@ async def menu_goster(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "Ne yapmak istersin?"
     )
     if update.callback_query:
-        await update.callback_query.edit_message_text(metin, parse_mode="Markdown", reply_markup=ana_menu_klavye())
+        await update.callback_query.edit_message_text(
+            metin, parse_mode="Markdown", reply_markup=ana_menu_klavye()
+        )
     else:
-        await update.message.reply_text(metin, parse_mode="Markdown", reply_markup=ana_menu_klavye())
+        await update.message.reply_text(
+            metin, parse_mode="Markdown", reply_markup=ana_menu_klavye()
+        )
 
 
-# ════════════════════════════════════════════
-#  ÇOKLU HİSSE PARSE
-# ════════════════════════════════════════════
+# ════════════════════════════════════════════════════════
+#  MESAJ ROUTER — sadece PREFIX ile başlayanlar
+# ════════════════════════════════════════════════════════
 
-def parse_hisseler(metin: str) -> list[tuple[str, float]] | None:
-    """
-    "Karel 12.70 Glrmk 192 Hatsn 45.4" gibi metni
-    [("KAREL", 12.70), ("GLRMK", 192.0), ("HATSN", 45.4)] döndürür.
-    Hatalıysa None.
-    """
-    parcalar = metin.split()
-    if len(parcalar) % 2 != 0:
-        return None
-    sonuc = []
-    for i in range(0, len(parcalar), 2):
-        sembol = parcalar[i].upper()
-        if not all(c.isalpha() or c.isdigit() or c == "-" for c in sembol):
-            return None
-        try:
-            fiyat = float(parcalar[i + 1].replace(",", "."))
-            if fiyat <= 0:
-                return None
-        except ValueError:
-            return None
-        sonuc.append((sembol, fiyat))
-    return sonuc if sonuc else None
-
-
-# ════════════════════════════════════════════
-#  MESAJ YÖNETİCİ (sadece PREFIX ile başlayanlar)
-# ════════════════════════════════════════════
-
-# Bekleyen kapanış: {user_id: poz_id}
-bekleyen_kapanis: dict[int, int] = {}
+bekleyen_kapanis: dict[int, int] = {}   # uid → poz_id
 
 async def mesaj_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid   = update.effective_user.id
@@ -165,106 +172,104 @@ async def mesaj_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # Kapanış fiyatı bekleniyor mu?
     if uid in bekleyen_kapanis:
-        # Takipçi prefix olmasa da kapanışı işle
         await _kapat_isle(update, ctx, uid, bekleyen_kapanis[uid])
         return
 
-    # Prefix kontrolü — grup ve özel sohbet uyumlu
+    # Prefix yoksa cevap verme (gruplar için kritik)
     if not metin.lower().startswith(PREFIX):
-        return  # bot cevap vermez
+        return
 
-    komut = prefix_cikar(metin).strip()
+    komut = prefix_cikar(metin)
 
     if not komut:
         await menu_goster(update, ctx)
         return
 
-    # Özel komutlar
-    if komut.lower() in ["menu", "menü", "ana menü", "ana menu"]:
+    kl = komut.lower()
+    if kl in ["menu", "menü", "ana menü", "ana menu"]:
         await menu_goster(update, ctx)
         return
-
-    if komut.lower() in ["son durum", "durum", "portfoy", "portföy"]:
-        await _son_durum(update, uid)
+    if kl in ["son durum", "durum", "portfoy", "portföy"]:
+        await _son_durum(update)
         return
-
-    if komut.lower() in ["yardim", "yardım"]:
+    if kl in ["yardim", "yardım"]:
         await _yardim_mesaj(update)
         return
 
-    # Hisse parse dene
+    # Hisse parse
     hisseler = parse_hisseler(komut)
-
-    if hisseler is None:
+    if hisseler:
+        await _hisse_ekle_coklu(update, hisseler)
+    else:
         await update.message.reply_text(
-            "❓ Anlamadım.\n\n"
-            "Tek hisse: `Takipçi THYAO 125`\n"
-            "Çoklu: `Takipçi Karel 12.70 Glrmk 192 Hatsn 45.4`\n"
-            "Menü: `Takipçi menu`",
+            "❓ *Anlamadım.*\n\n"
+            "Tek hisse:\n`Takipçi THYAO 125`\n\n"
+            "Çoklu hisse:\n`Takipçi Karel 12.70 Glrmk 192 Hatsn 45.4`\n\n"
+            "Menü:\n`Takipçi menu`",
             parse_mode="Markdown"
         )
-        return
-
-    # Çoklu hisse ekle
-    await _hisse_ekle_coklu(update, uid, hisseler)
 
 
-# ════════════════════════════════════════════
-#  ÇOKLU HİSSE EKLE
-# ════════════════════════════════════════════
+# ════════════════════════════════════════════════════════
+#  HİSSE EKLE
+# ════════════════════════════════════════════════════════
 
-async def _hisse_ekle_coklu(update: Update, uid: int, hisseler: list[tuple[str, float]]):
-    if len(hisseler) == 1:
-        bekle_msg = await update.message.reply_text(
-            f"🔍 `{hisseler[0][0]}` aranıyor...", parse_mode="Markdown"
-        )
-    else:
-        bekle_msg = await update.message.reply_text(
-            f"🔍 {len(hisseler)} hisse aranıyor...", parse_mode="Markdown"
-        )
+async def _hisse_ekle_coklu(update: Update, hisseler: list):
+    uid      = update.effective_user.id
+    chat_id  = chat_id_al(update)
+    adi      = kullanici_adi_al(update.effective_user)
+    tarih    = bugun()
 
-    sonuclar = []
-    hatalar  = []
+    bekle_msg = await update.message.reply_text(
+        f"🔍 _{len(hisseler)} hisse aranıyor..._",
+        parse_mode="Markdown"
+    )
+
+    eklenenler = []
+    hatalar    = []
 
     for sembol_goster, alis in hisseler:
         fiyat, sembol_tam = fiyat_al(sembol_goster)
-
         if fiyat is None:
             hatalar.append(sembol_goster)
             continue
 
         with db() as con:
             con.execute(
-                "INSERT INTO pozisyonlar (kullanici, sembol, sembol_goster, alis_fiyati, adet, alis_tarihi) VALUES (?,?,?,?,?,?)",
-                (uid, sembol_tam, sembol_goster, alis, 1.0, bugun())
+                """INSERT INTO pozisyonlar
+                   (chat_id, kullanici_id, kullanici_adi, sembol, sembol_goster, alis_fiyati, adet, alis_tarihi)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (chat_id, uid, adi, sembol_tam, sembol_goster, alis, 1.0, tarih)
             )
             con.commit()
 
         yuzde = ((fiyat - alis) / alis) * 100
-        sonuclar.append((sembol_goster, alis, fiyat, yuzde))
+        eklenenler.append((sembol_goster, alis, fiyat, yuzde))
 
-    # Yanıt oluştur
-    if len(sonuclar) == 1:
-        g, alis, fiyat, yuzde = sonuclar[0]
-        metin = (
-            f"✅ *{g}* eklendi!\n\n"
-            f"📅 `{fmt_tarih(bugun())}`\n"
-            f"💰 Alış: `{alis:,.2f}`  →  Şimdi: `{fiyat:,.2f}`\n"
-            f"{kar_emoji(yuzde)} `{yuzde:+.2f}%`"
-        )
-    elif sonuclar:
-        satirlar = [f"✅ *{len(sonuclar)} hisse eklendi!*\n📅 `{fmt_tarih(bugun())}`\n"]
-        for g, alis, fiyat, yuzde in sonuclar:
-            satirlar.append(
-                f"{kar_emoji(yuzde)} *{g}*  `{yuzde:+.2f}%`\n"
-                f"   `{alis:,.2f}` → `{fiyat:,.2f}`"
-            )
-        metin = "\n".join(satirlar)
+    # ── Yanıt oluştur ──
+    if not eklenenler:
+        metin = f"⚠️ Hiçbir hisse eklenemedi.\nBulunamadı: {', '.join(hatalar)}"
     else:
-        metin = "⚠️ Hiçbir hisse eklenemedi."
+        baslik = (
+            f"✅ *{len(eklenenler)} hisse eklendi*\n"
+            f"👤 {adi}  •  📅 {fmt_tarih(tarih)}\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+        )
 
-    if hatalar:
-        metin += f"\n\n⚠️ Bulunamadı: {', '.join(hatalar)}"
+        # En kazanandan en kötüye sırala
+        eklenenler.sort(key=lambda x: x[3], reverse=True)
+
+        satirlar = []
+        for i, (goster, alis, fiyat, yuzde) in enumerate(eklenenler, 1):
+            satirlar.append(
+                f"{i}. {kar_emoji(yuzde)} *{goster}*   `{yuzde:+.2f}%`\n"
+                f"    Alış: `{alis:,.2f}`  →  Şimdi: `{fiyat:,.2f}`"
+            )
+
+        metin = baslik + "\n\n".join(satirlar)
+
+        if hatalar:
+            metin += f"\n\n⚠️ Bulunamadı: `{'`, `'.join(hatalar)}`"
 
     klavye = InlineKeyboardMarkup([
         [
@@ -277,15 +282,19 @@ async def _hisse_ekle_coklu(update: Update, uid: int, hisseler: list[tuple[str, 
     await bekle_msg.edit_text(metin, parse_mode="Markdown", reply_markup=klavye)
 
 
-# ════════════════════════════════════════════
+# ════════════════════════════════════════════════════════
 #  SON DURUM
-# ════════════════════════════════════════════
+# ════════════════════════════════════════════════════════
 
-async def _son_durum(update, uid):
+async def _son_durum(update: Update):
+    chat_id = chat_id_al(update)
+
     with db() as con:
         kayitlar = con.execute(
-            "SELECT sembol, sembol_goster, alis_fiyati, adet, alis_tarihi FROM pozisyonlar WHERE kullanici=? AND durum='acik' ORDER BY sembol_goster",
-            (uid,)
+            """SELECT sembol, sembol_goster, alis_fiyati, adet, alis_tarihi, kullanici_adi
+               FROM pozisyonlar WHERE chat_id=? AND durum='acik'
+               ORDER BY sembol_goster""",
+            (chat_id,)
         ).fetchall()
 
     klavye = InlineKeyboardMarkup([
@@ -304,6 +313,7 @@ async def _son_durum(update, uid):
             await update.message.reply_text(metin, parse_mode="Markdown", reply_markup=klavye)
         return
 
+    # Fiyat çek
     semboller = list({r[0] for r in kayitlar})
     fiyatlar  = {}
     for s in semboller:
@@ -314,31 +324,31 @@ async def _son_durum(update, uid):
         except:
             fiyatlar[s] = None
 
-    gruplar: dict = {}
-    for sembol, goster, alis, adet, tarih in kayitlar:
-        gruplar.setdefault(sembol, {"goster": goster, "pozlar": []})
-        gruplar[sembol]["pozlar"].append((alis, adet, tarih))
-
     toplam_maliyet = toplam_deger = 0.0
     veriler = []
 
-    for sembol, bilgi in gruplar.items():
+    for sembol, goster, alis, adet, tarih, k_adi in kayitlar:
         fiyat = fiyatlar.get(sembol)
         if fiyat is None:
-            veriler.append((None, f"⚠️ *{bilgi['goster']}* — fiyat alınamadı"))
+            veriler.append((None, f"⚠️ *{goster}* — fiyat alınamadı"))
             continue
-        for alis, adet, tarih in bilgi["pozlar"]:
-            yuzde = ((fiyat - alis) / alis) * 100
-            gun   = gun_farki(tarih)
-            toplam_maliyet += alis * adet
-            toplam_deger   += fiyat * adet
-            gun_metin = "bugün" if gun == 0 else f"{gun}g"
-            satir = (
-                f"{kar_emoji(yuzde)} *{bilgi['goster']}*  `{yuzde:+.2f}%`\n"
-                f"   `{alis:,.2f}` → `{fiyat:,.2f}`  •  _{gun_metin}_"
-            )
-            veriler.append((yuzde, satir))
 
+        yuzde = ((fiyat - alis) / alis) * 100
+        gun   = gun_farki(tarih)
+        toplam_maliyet += alis * adet
+        toplam_deger   += fiyat * adet
+        gun_metin = "bugün" if gun == 0 else f"{gun}g"
+
+        # Kısa isim (sadece ad)
+        kisa_ad = k_adi.split()[0] if k_adi else "?"
+
+        satir = (
+            f"{kar_emoji(yuzde)} *{goster}*   `{yuzde:+.2f}%`\n"
+            f"    `{alis:,.2f}` → `{fiyat:,.2f}`   •   _{gun_metin}_   •   👤 {kisa_ad}"
+        )
+        veriler.append((yuzde, satir))
+
+    # En iyi → en kötü sırala
     veriler.sort(key=lambda x: x[0] if x[0] is not None else -9999, reverse=True)
 
     toplam_kar   = toplam_deger - toplam_maliyet
@@ -347,12 +357,12 @@ async def _son_durum(update, uid):
     satirlar = [f"{i}. {s}" for i, (_, s) in enumerate(veriler, 1)]
 
     metin = (
-        f"📊 *SON DURUM*  —  {date.today().strftime('%d.%m.%Y')}\n"
+        f"📊 *SON DURUM*   —   {date.today().strftime('%d.%m.%Y')}\n"
         "━━━━━━━━━━━━━━━━━━\n\n"
         + "\n\n".join(satirlar)
-        + f"\n\n━━━━━━━━━━━━━━━━━━\n"
-        f"💼 *Portföy:*  `{toplam_yuzde:+.2f}%`  {kar_emoji(toplam_yuzde)}\n"
-        f"   K/Z: `{toplam_kar:+,.2f}`"
+        + "\n\n━━━━━━━━━━━━━━━━━━\n"
+        f"💼 *Portföy:*   `{toplam_yuzde:+.2f}%`   {kar_emoji(toplam_yuzde)}\n"
+        f"    Net K/Z: `{toplam_kar:+,.2f}`"
     )
 
     if update.callback_query:
@@ -361,15 +371,19 @@ async def _son_durum(update, uid):
         await update.message.reply_text(metin, parse_mode="Markdown", reply_markup=klavye)
 
 
-# ════════════════════════════════════════════
-#  AÇIK POZİSYONLAR (kapat + sil butonu)
-# ════════════════════════════════════════════
+# ════════════════════════════════════════════════════════
+#  AÇIK POZİSYONLAR
+# ════════════════════════════════════════════════════════
 
-async def _acik_pozlar(update, uid, sayfa=0):
+async def _acik_pozlar(update: Update):
+    chat_id = chat_id_al(update)
+
     with db() as con:
         kayitlar = con.execute(
-            "SELECT id, sembol_goster, alis_fiyati, adet, alis_tarihi FROM pozisyonlar WHERE kullanici=? AND durum='acik' ORDER BY alis_tarihi DESC",
-            (uid,)
+            """SELECT id, sembol_goster, alis_fiyati, adet, alis_tarihi, kullanici_adi
+               FROM pozisyonlar WHERE chat_id=? AND durum='acik'
+               ORDER BY alis_tarihi DESC""",
+            (chat_id,)
         ).fetchall()
 
     if not kayitlar:
@@ -377,34 +391,38 @@ async def _acik_pozlar(update, uid, sayfa=0):
         await update.callback_query.edit_message_text("📭 Açık pozisyon yok.", reply_markup=klavye)
         return
 
-    metin = f"📂 *Açık Pozisyonlar*  ({len(kayitlar)} adet)\n━━━━━━━━━━━━━━━━━━\n\n"
+    metin = f"📂 *Açık Pozisyonlar*   ({len(kayitlar)} adet)\n━━━━━━━━━━━━━━━━━━\n\n"
     butonlar = []
 
-    for poz_id, goster, alis, adet, tarih in kayitlar:
+    for poz_id, goster, alis, adet, tarih, k_adi in kayitlar:
         gun = gun_farki(tarih)
         gun_metin = "bugün" if gun == 0 else f"{gun} gün önce"
+        kisa_ad   = k_adi.split()[0] if k_adi else "?"
         metin += (
-            f"📌 *{goster}*  `{alis:,.2f}` × {adet:,.0f} adet\n"
-            f"   📅 {fmt_tarih(tarih)}  _{gun_metin}_\n\n"
+            f"📌 *{goster}*   `{alis:,.2f}` × {adet:,.0f}\n"
+            f"    📅 {fmt_tarih(tarih)}  _{gun_metin}_   •   👤 {kisa_ad}\n\n"
         )
         butonlar.append([
-            InlineKeyboardButton(f"❌ {goster} Kapat",     callback_data=f"kapat_{poz_id}"),
-            InlineKeyboardButton(f"🗑 {goster} Sil",       callback_data=f"sil_{poz_id}"),
+            InlineKeyboardButton(f"❌ {goster} Kapat", callback_data=f"kapat_{poz_id}"),
+            InlineKeyboardButton(f"🗑 {goster} Sil",   callback_data=f"sil_{poz_id}"),
         ])
 
     butonlar.append([InlineKeyboardButton("🏠 Ana Menü", callback_data="ana_menu")])
-    await update.callback_query.edit_message_text(metin, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(butonlar))
+    await update.callback_query.edit_message_text(
+        metin, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(butonlar)
+    )
 
 
-# ════════════════════════════════════════════
-#  POZİSYON SİL (direkt)
-# ════════════════════════════════════════════
+# ════════════════════════════════════════════════════════
+#  SİL
+# ════════════════════════════════════════════════════════
 
-async def _sil_poz(update, uid, poz_id):
+async def _sil_poz(update: Update, poz_id: int):
+    chat_id = update.effective_chat.id
     with db() as con:
         row = con.execute(
-            "SELECT sembol_goster, alis_fiyati, adet FROM pozisyonlar WHERE id=? AND kullanici=?",
-            (poz_id, uid)
+            "SELECT sembol_goster FROM pozisyonlar WHERE id=? AND chat_id=?",
+            (poz_id, chat_id)
         ).fetchone()
         if not row:
             await update.callback_query.answer("Bulunamadı.")
@@ -412,20 +430,20 @@ async def _sil_poz(update, uid, poz_id):
         con.execute("DELETE FROM pozisyonlar WHERE id=?", (poz_id,))
         con.commit()
 
-    goster, alis, adet = row
-    await update.callback_query.answer(f"🗑 {goster} silindi.")
-    await _acik_pozlar(update, uid)
+    await update.callback_query.answer(f"🗑 {row[0]} silindi.")
+    await _acik_pozlar(update)
 
 
-# ════════════════════════════════════════════
+# ════════════════════════════════════════════════════════
 #  POZİSYON KAPAT
-# ════════════════════════════════════════════
+# ════════════════════════════════════════════════════════
 
-async def _kapat_sor(update, uid, poz_id):
+async def _kapat_sor(update: Update, uid: int, poz_id: int):
+    chat_id = update.effective_chat.id
     with db() as con:
         row = con.execute(
-            "SELECT sembol_goster, alis_fiyati, adet, alis_tarihi FROM pozisyonlar WHERE id=? AND kullanici=?",
-            (poz_id, uid)
+            "SELECT sembol_goster, alis_fiyati, adet, alis_tarihi FROM pozisyonlar WHERE id=? AND chat_id=?",
+            (poz_id, chat_id)
         ).fetchone()
 
     if not row:
@@ -438,8 +456,8 @@ async def _kapat_sor(update, uid, poz_id):
     klavye = InlineKeyboardMarkup([[InlineKeyboardButton("❌ İptal", callback_data="acik_pozlar")]])
     await update.callback_query.edit_message_text(
         f"❌ *{goster}* kapatılıyor\n\n"
-        f"📅 {fmt_tarih(tarih)}  |  `{alis:,.2f}` × {adet:,.0f} adet\n\n"
-        f"💬 *Satış fiyatını yaz:*\n_(Örn: `185.50`)_",
+        f"📅 {fmt_tarih(tarih)}   |   `{alis:,.2f}` × {adet:,.0f} adet\n\n"
+        f"💬 *Satış fiyatını yaz:*\n_Örn: `185.50`_",
         parse_mode="Markdown",
         reply_markup=klavye
     )
@@ -447,7 +465,6 @@ async def _kapat_sor(update, uid, poz_id):
 async def _kapat_isle(update: Update, ctx: ContextTypes.DEFAULT_TYPE, uid: int, poz_id: int):
     metin = update.message.text.strip()
 
-    # Eğer yeni bir Takipçi komutu yazıldıysa iptal et
     if metin.lower().startswith(PREFIX):
         del bekleyen_kapanis[uid]
         await mesaj_router(update, ctx)
@@ -455,20 +472,23 @@ async def _kapat_isle(update: Update, ctx: ContextTypes.DEFAULT_TYPE, uid: int, 
 
     try:
         satis = float(metin.replace(",", "."))
-    except ValueError:
+        assert satis > 0
+    except:
         await update.message.reply_text("❌ Geçersiz fiyat, tekrar yaz.")
         return
 
+    chat_id = chat_id_al(update)
+
     with db() as con:
         row = con.execute(
-            "SELECT sembol_goster, alis_fiyati, adet, alis_tarihi FROM pozisyonlar WHERE id=? AND kullanici=? AND durum='acik'",
-            (poz_id, uid)
+            "SELECT sembol_goster, alis_fiyati, adet, alis_tarihi, kullanici_adi FROM pozisyonlar WHERE id=? AND chat_id=? AND durum='acik'",
+            (poz_id, chat_id)
         ).fetchone()
         if not row:
             del bekleyen_kapanis[uid]
             await update.message.reply_text("⚠️ Pozisyon bulunamadı.")
             return
-        goster, alis, adet, tarih = row
+        goster, alis, adet, tarih, k_adi = row
         con.execute(
             "UPDATE pozisyonlar SET durum='kapali', satis_fiyati=?, satis_tarihi=? WHERE id=?",
             (satis, bugun(), poz_id)
@@ -489,25 +509,33 @@ async def _kapat_isle(update: Update, ctx: ContextTypes.DEFAULT_TYPE, uid: int, 
         [InlineKeyboardButton("🏠 Ana Menü", callback_data="ana_menu")]
     ])
 
+    kapatan = kullanici_adi_al(update.effective_user)
+
     await update.message.reply_text(
         f"{kar_emoji(yuzde)} *{goster}* kapatıldı!\n\n"
-        f"📅 {fmt_tarih(tarih)} → {fmt_tarih(bugun())}  _({gun}g)_\n"
-        f"💰 `{alis:,.2f}` → `{satis:,.2f}`  |  {adet:,.0f} adet\n\n"
-        f"{'🟢' if kar >= 0 else '🔴'} K/Z: `{kar:+,.2f}` ({yuzde:+.2f}%)",
+        f"👤 Ekleyen: {k_adi}   •   Kapatan: {kapatan}\n"
+        f"📅 {fmt_tarih(tarih)} → {fmt_tarih(bugun())}   _({gun}g)_\n"
+        f"💰 `{alis:,.2f}` → `{satis:,.2f}`   |   {adet:,.0f} adet\n\n"
+        f"{'🟢' if kar >= 0 else '🔴'} *K/Z:*   `{kar:+,.2f}` ({yuzde:+.2f}%)",
         parse_mode="Markdown",
         reply_markup=klavye
     )
 
 
-# ════════════════════════════════════════════
+# ════════════════════════════════════════════════════════
 #  KAPALI POZİSYONLAR
-# ════════════════════════════════════════════
+# ════════════════════════════════════════════════════════
 
-async def _kapali_pozlar(update, uid):
+async def _kapali_pozlar(update: Update):
+    chat_id = chat_id_al(update)
+
     with db() as con:
         kayitlar = con.execute(
-            "SELECT id, sembol_goster, alis_fiyati, satis_fiyati, adet, alis_tarihi, satis_tarihi FROM pozisyonlar WHERE kullanici=? AND durum='kapali' ORDER BY satis_tarihi DESC",
-            (uid,)
+            """SELECT id, sembol_goster, alis_fiyati, satis_fiyati, adet,
+                      alis_tarihi, satis_tarihi, kullanici_adi
+               FROM pozisyonlar WHERE chat_id=? AND durum='kapali'
+               ORDER BY satis_tarihi DESC""",
+            (chat_id,)
         ).fetchall()
 
     if not kayitlar:
@@ -519,15 +547,16 @@ async def _kapali_pozlar(update, uid):
     satirlar   = []
     butonlar   = []
 
-    for poz_id, goster, alis, satis, adet, a_tar, s_tar in kayitlar:
-        kar   = (satis - alis) * adet
-        yuzde = ((satis - alis) / alis) * 100
-        gun   = (datetime.strptime(s_tar, "%Y-%m-%d") - datetime.strptime(a_tar, "%Y-%m-%d")).days
+    for poz_id, goster, alis, satis, adet, a_tar, s_tar, k_adi in kayitlar:
+        kar      = (satis - alis) * adet
+        yuzde    = ((satis - alis) / alis) * 100
+        gun      = (datetime.strptime(s_tar, "%Y-%m-%d") - datetime.strptime(a_tar, "%Y-%m-%d")).days
+        kisa_ad  = k_adi.split()[0] if k_adi else "?"
         toplam_kar += kar
         satirlar.append(
-            f"{kar_emoji(yuzde)} *{goster}*  `{yuzde:+.2f}%`\n"
-            f"   `{alis:,.2f}` → `{satis:,.2f}`  |  K/Z: `{kar:+,.2f}`\n"
-            f"   _{fmt_tarih(a_tar)} – {fmt_tarih(s_tar)} ({gun}g)_"
+            f"{kar_emoji(yuzde)} *{goster}*   `{yuzde:+.2f}%`\n"
+            f"    `{alis:,.2f}` → `{satis:,.2f}`   K/Z: `{kar:+,.2f}`\n"
+            f"    _{fmt_tarih(a_tar)} – {fmt_tarih(s_tar)} ({gun}g)_   •   👤 {kisa_ad}"
         )
         butonlar.append([
             InlineKeyboardButton(f"🗑 {goster} Sil", callback_data=f"sil_{poz_id}")
@@ -535,29 +564,35 @@ async def _kapali_pozlar(update, uid):
 
     ozet_emoji = "🟢" if toplam_kar >= 0 else "🔴"
     metin = (
-        f"📁 *Kapalı Pozisyonlar*  ({len(kayitlar)} işlem)\n"
+        f"📁 *Kapalı Pozisyonlar*   ({len(kayitlar)} işlem)\n"
         "━━━━━━━━━━━━━━━━━━\n\n"
         + "\n\n".join(satirlar)
         + f"\n\n━━━━━━━━━━━━━━━━━━\n"
-        f"{ozet_emoji} Toplam K/Z: `{toplam_kar:+,.2f}`"
+        f"{ozet_emoji} *Toplam Gerçekleşen K/Z:* `{toplam_kar:+,.2f}`"
     )
 
     butonlar.append([
         InlineKeyboardButton("📂 Açık Pozlar", callback_data="acik_pozlar"),
         InlineKeyboardButton("🏠 Ana Menü",    callback_data="ana_menu"),
     ])
-    await update.callback_query.edit_message_text(metin, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(butonlar))
+    await update.callback_query.edit_message_text(
+        metin, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(butonlar)
+    )
 
 
-# ════════════════════════════════════════════
+# ════════════════════════════════════════════════════════
 #  GEÇMİŞ
-# ════════════════════════════════════════════
+# ════════════════════════════════════════════════════════
 
-async def _gecmis(update, uid):
+async def _gecmis(update: Update):
+    chat_id = chat_id_al(update)
+
     with db() as con:
         kayitlar = con.execute(
-            "SELECT sembol_goster, alis_fiyati, adet, alis_tarihi, durum, satis_fiyati, satis_tarihi FROM pozisyonlar WHERE kullanici=? ORDER BY eklendi DESC LIMIT 30",
-            (uid,)
+            """SELECT sembol_goster, alis_fiyati, adet, alis_tarihi, durum,
+                      satis_fiyati, satis_tarihi, kullanici_adi
+               FROM pozisyonlar WHERE chat_id=? ORDER BY eklendi DESC LIMIT 30""",
+            (chat_id,)
         ).fetchall()
 
     if not kayitlar:
@@ -565,20 +600,21 @@ async def _gecmis(update, uid):
         await update.callback_query.edit_message_text("📜 Hiç kayıt yok.", reply_markup=klavye)
         return
 
-    satirlar = [f"📜 *İşlem Geçmişi*  (son {len(kayitlar)})\n━━━━━━━━━━━━━━━━━━"]
-    for goster, alis, adet, a_tar, durum, satis, s_tar in kayitlar:
+    satirlar = [f"📜 *İşlem Geçmişi*   (son {len(kayitlar)})\n━━━━━━━━━━━━━━━━━━"]
+    for goster, alis, adet, a_tar, durum, satis, s_tar, k_adi in kayitlar:
+        kisa_ad = k_adi.split()[0] if k_adi else "?"
         if durum == "acik":
             gun = gun_farki(a_tar)
             satirlar.append(
-                f"🟡 *{goster}*  `{alis:,.2f}` × {adet:,.0f}\n"
-                f"   📅 {fmt_tarih(a_tar)}  —  _{gun}g açık_"
+                f"🟡 *{goster}*   `{alis:,.2f}` × {adet:,.0f}\n"
+                f"    📅 {fmt_tarih(a_tar)}   _{gun}g açık_   •   👤 {kisa_ad}"
             )
         else:
             kar   = (satis - alis) * adet
             yuzde = ((satis - alis) / alis) * 100
             satirlar.append(
-                f"{'🟢' if kar >= 0 else '🔴'} *{goster}*  `{alis:,.2f}` → `{satis:,.2f}`\n"
-                f"   {fmt_tarih(a_tar)} – {fmt_tarih(s_tar)}  |  K/Z: `{kar:+,.2f}` ({yuzde:+.2f}%)"
+                f"{'🟢' if kar >= 0 else '🔴'} *{goster}*   `{alis:,.2f}` → `{satis:,.2f}`\n"
+                f"    {fmt_tarih(a_tar)} – {fmt_tarih(s_tar)}   K/Z: `{kar:+,.2f}` ({yuzde:+.2f}%)   •   👤 {kisa_ad}"
             )
 
     klavye = InlineKeyboardMarkup([
@@ -588,47 +624,39 @@ async def _gecmis(update, uid):
         ],
         [InlineKeyboardButton("🏠 Ana Menü", callback_data="ana_menu")]
     ])
-    await update.callback_query.edit_message_text("\n\n".join(satirlar), parse_mode="Markdown", reply_markup=klavye)
+    await update.callback_query.edit_message_text(
+        "\n\n".join(satirlar), parse_mode="Markdown", reply_markup=klavye
+    )
 
 
-# ════════════════════════════════════════════
+# ════════════════════════════════════════════════════════
 #  YARDIM
-# ════════════════════════════════════════════
+# ════════════════════════════════════════════════════════
 
-async def _yardim_mesaj(update):
-    metin = (
-        "❓ *Nasıl Kullanılır?*\n\n"
-        "Her mesajın başına *Takipçi* yaz:\n\n"
-        "`Takipçi THYAO 125`\n"
-        "`Takipçi Karel 12.70 Glrmk 192`\n"
-        "`Takipçi son durum`\n"
-        "`Takipçi menu`\n\n"
-        "Kapat/Sil:\n"
-        "📂 Açık Pozlar → ❌ Kapat veya 🗑 Sil\n\n"
-        "💡 _Grupta sadece Takipçi ile başlayan mesajlara cevap verir_"
-    )
+YARDIM_METIN = (
+    "❓ *Nasıl Kullanılır?*\n\n"
+    "Her mesajın başına *Takipçi* yaz:\n\n"
+    "Tek hisse:\n`Takipçi THYAO 125`\n\n"
+    "Çoklu hisse:\n`Takipçi Karel 12.70 Glrmk 192 Hatsn 45.4`\n\n"
+    "Rapor:\n`Takipçi son durum`\n\n"
+    "Menü:\n`Takipçi menu`\n\n"
+    "Kapat / Sil:\n"
+    "📂 Açık Pozlar → ❌ Kapat veya 🗑 Sil\n\n"
+    "💡 _Grupta sadece Takipçi ile başlayan mesajlara cevap verir_"
+)
+
+async def _yardim_mesaj(update: Update):
     klavye = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Ana Menü", callback_data="ana_menu")]])
-    await update.message.reply_text(metin, parse_mode="Markdown", reply_markup=klavye)
+    await update.message.reply_text(YARDIM_METIN, parse_mode="Markdown", reply_markup=klavye)
 
-async def _yardim(update, uid):
-    metin = (
-        "❓ *Nasıl Kullanılır?*\n\n"
-        "Her mesajın başına *Takipçi* yaz:\n\n"
-        "`Takipçi THYAO 125`\n"
-        "`Takipçi Karel 12.70 Glrmk 192`\n"
-        "`Takipçi son durum`\n"
-        "`Takipçi menu`\n\n"
-        "Kapat/Sil:\n"
-        "📂 Açık Pozlar → ❌ Kapat veya 🗑 Sil\n\n"
-        "💡 _Grupta sadece Takipçi ile başlayan mesajlara cevap verir_"
-    )
+async def _yardim_callback(update: Update):
     klavye = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Ana Menü", callback_data="ana_menu")]])
-    await update.callback_query.edit_message_text(metin, parse_mode="Markdown", reply_markup=klavye)
+    await update.callback_query.edit_message_text(YARDIM_METIN, parse_mode="Markdown", reply_markup=klavye)
 
 
-# ════════════════════════════════════════════
+# ════════════════════════════════════════════════════════
 #  CALLBACK YÖNETİCİ
-# ════════════════════════════════════════════
+# ════════════════════════════════════════════════════════
 
 async def callback_isle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -636,19 +664,19 @@ async def callback_isle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid  = query.from_user.id
     data = query.data
 
-    if data == "ana_menu":          await menu_goster(update, ctx)
-    elif data == "son_durum":       await _son_durum(update, uid)
-    elif data == "acik_pozlar":     await _acik_pozlar(update, uid)
-    elif data == "kapali_pozlar":   await _kapali_pozlar(update, uid)
-    elif data == "gecmis":          await _gecmis(update, uid)
-    elif data == "yardim":          await _yardim(update, uid)
+    if   data == "ana_menu":        await menu_goster(update, ctx)
+    elif data == "son_durum":       await _son_durum(update)
+    elif data == "acik_pozlar":     await _acik_pozlar(update)
+    elif data == "kapali_pozlar":   await _kapali_pozlar(update)
+    elif data == "gecmis":          await _gecmis(update)
+    elif data == "yardim":          await _yardim_callback(update)
     elif data.startswith("kapat_"): await _kapat_sor(update, uid, int(data.split("_")[1]))
-    elif data.startswith("sil_"):   await _sil_poz(update, uid, int(data.split("_")[1]))
+    elif data.startswith("sil_"):   await _sil_poz(update, int(data.split("_")[1]))
 
 
-# ════════════════════════════════════════════
+# ════════════════════════════════════════════════════════
 #  ANA PROGRAM
-# ════════════════════════════════════════════
+# ════════════════════════════════════════════════════════
 
 def main():
     db_olustur()
