@@ -82,6 +82,21 @@ def kar_emoji(yuzde: float) -> str:
     if yuzde >= -5: return "📉"
     return "🔴"
 
+def yuzde_fmt(yuzde: float) -> str:
+    """Yüzdeyi renkli formatlar: 🟢 +5.20% veya 🔴 -3.10%"""
+    if yuzde >= 0:
+        return f"🟢 *+{yuzde:.2f}%*"
+    return f"🔴 *{yuzde:.2f}%*"
+
+def fiyat_yonu(alis: float, simdiki: float) -> str:
+    ok = "▲" if simdiki >= alis else "▼"
+    return f"`{alis:,.2f}` {ok} `{simdiki:,.2f}`"
+
+def kz_fmt(kar: float, yuzde: float) -> str:
+    isaret = "🟢" if kar >= 0 else "🔴"
+    isaretli = f"+{kar:,.2f}" if kar >= 0 else f"{kar:,.2f}"
+    return f"{isaret} `{isaretli}` ({yuzde_fmt(yuzde)})"
+
 def gun_farki(tarih_str: str) -> int:
     return (date.today() - datetime.strptime(tarih_str, "%Y-%m-%d").date()).days
 
@@ -262,8 +277,9 @@ async def _hisse_ekle_coklu(update: Update, hisseler: list):
         satirlar = []
         for i, (goster, alis, fiyat, yuzde) in enumerate(eklenenler, 1):
             satirlar.append(
-                f"{i}. {kar_emoji(yuzde)} *{goster}*   `{yuzde:+.2f}%`\n"
-                f"    Alış: `{alis:,.2f}`  →  Şimdi: `{fiyat:,.2f}`"
+                f"{i}. {kar_emoji(yuzde)} *{goster}*\n"
+                f"    {yuzde_fmt(yuzde)}\n"
+                f"    {fiyat_yonu(alis, fiyat)}"
             )
 
         metin = baslik + "\n\n".join(satirlar)
@@ -343,8 +359,9 @@ async def _son_durum(update: Update):
         kisa_ad = k_adi.split()[0] if k_adi else "?"
 
         satir = (
-            f"{kar_emoji(yuzde)} *{goster}*   `{yuzde:+.2f}%`\n"
-            f"    `{alis:,.2f}` → `{fiyat:,.2f}`   •   _{gun_metin}_   •   👤 {kisa_ad}"
+            f"{kar_emoji(yuzde)} *{goster}*\n"
+            f"    {yuzde_fmt(yuzde)}   •   {fiyat_yonu(alis, fiyat)}\n"
+            f"    _{gun_metin}_   •   👤 {kisa_ad}"
         )
         veriler.append((yuzde, satir))
 
@@ -361,8 +378,8 @@ async def _son_durum(update: Update):
         "━━━━━━━━━━━━━━━━━━\n\n"
         + "\n\n".join(satirlar)
         + "\n\n━━━━━━━━━━━━━━━━━━\n"
-        f"💼 *Portföy:*   `{toplam_yuzde:+.2f}%`   {kar_emoji(toplam_yuzde)}\n"
-        f"    Net K/Z: `{toplam_kar:+,.2f}`"
+        f"💼 *Portföy:*   {yuzde_fmt(toplam_yuzde)}\n"
+        f"    Net K/Z: {'🟢' if toplam_kar >= 0 else '🔴'} `{toplam_kar:+,.2f}`"
     )
 
     if update.callback_query:
@@ -515,8 +532,8 @@ async def _kapat_isle(update: Update, ctx: ContextTypes.DEFAULT_TYPE, uid: int, 
         f"{kar_emoji(yuzde)} *{goster}* kapatıldı!\n\n"
         f"👤 Ekleyen: {k_adi}   •   Kapatan: {kapatan}\n"
         f"📅 {fmt_tarih(tarih)} → {fmt_tarih(bugun())}   _({gun}g)_\n"
-        f"💰 `{alis:,.2f}` → `{satis:,.2f}`   |   {adet:,.0f} adet\n\n"
-        f"{'🟢' if kar >= 0 else '🔴'} *K/Z:*   `{kar:+,.2f}` ({yuzde:+.2f}%)",
+        f"{fiyat_yonu(alis, satis)}   |   {adet:,.0f} adet\n\n"
+        f"*K/Z:* {kz_fmt(kar, yuzde)}",
         parse_mode="Markdown",
         reply_markup=klavye
     )
@@ -554,8 +571,8 @@ async def _kapali_pozlar(update: Update):
         kisa_ad  = k_adi.split()[0] if k_adi else "?"
         toplam_kar += kar
         satirlar.append(
-            f"{kar_emoji(yuzde)} *{goster}*   `{yuzde:+.2f}%`\n"
-            f"    `{alis:,.2f}` → `{satis:,.2f}`   K/Z: `{kar:+,.2f}`\n"
+            f"{kar_emoji(yuzde)} *{goster}*   {yuzde_fmt(yuzde)}\n"
+            f"    {fiyat_yonu(alis, satis)}   K/Z: {'🟢' if kar >= 0 else '🔴'} `{kar:+,.2f}`\n"
             f"    _{fmt_tarih(a_tar)} – {fmt_tarih(s_tar)} ({gun}g)_   •   👤 {kisa_ad}"
         )
         butonlar.append([
@@ -568,7 +585,7 @@ async def _kapali_pozlar(update: Update):
         "━━━━━━━━━━━━━━━━━━\n\n"
         + "\n\n".join(satirlar)
         + f"\n\n━━━━━━━━━━━━━━━━━━\n"
-        f"{ozet_emoji} *Toplam Gerçekleşen K/Z:* `{toplam_kar:+,.2f}`"
+        f"*Toplam Gerçekleşen K/Z:* {'🟢' if toplam_kar >= 0 else '🔴'} `{toplam_kar:+,.2f}`"
     )
 
     butonlar.append([
@@ -613,8 +630,9 @@ async def _gecmis(update: Update):
             kar   = (satis - alis) * adet
             yuzde = ((satis - alis) / alis) * 100
             satirlar.append(
-                f"{'🟢' if kar >= 0 else '🔴'} *{goster}*   `{alis:,.2f}` → `{satis:,.2f}`\n"
-                f"    {fmt_tarih(a_tar)} – {fmt_tarih(s_tar)}   K/Z: `{kar:+,.2f}` ({yuzde:+.2f}%)   •   👤 {kisa_ad}"
+                f"{'🟢' if kar >= 0 else '🔴'} *{goster}*   {yuzde_fmt(yuzde)}\n"
+                f"    {fiyat_yonu(alis, satis)}\n"
+                f"    K/Z: {'🟢' if kar >= 0 else '🔴'} `{kar:+,.2f}`   •   👤 {kisa_ad}"
             )
 
     klavye = InlineKeyboardMarkup([
